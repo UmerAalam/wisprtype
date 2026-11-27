@@ -1,87 +1,187 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute } from "@tanstack/react-router"
+import { useEffect, useRef, useState } from "react"
 
-export const Route = createFileRoute('/')({ component: App })
+import { MicRecorder } from "../lib/audio"
+import {
+  copyText,
+  hideBar,
+  insertText,
+  isDesktop,
+  onToggle,
+  showBar,
+} from "../lib/desktop"
+import { transcribe } from "../lib/engine"
 
-function App() {
+export const Route = createFileRoute("/")({ component: WisprBar })
+
+type Phase = "ready" | "recording" | "thinking" | "done" | "error"
+
+const BAR_LABEL: Record<Phase, string> = {
+  ready: "Ready when you are",
+  recording: "Listening...",
+  thinking: "Transcribing on device",
+  done: "Typed into your field",
+  error: "Something went wrong",
+}
+
+function WisprBar() {
+  const [phase, setPhase] = useState<Phase>("ready")
+  const [message, setMessage] = useState(
+    "Press Alt + W anywhere, then speak",
+  )
+  const [transcript, setTranscript] = useState("")
+  const [progress, setProgress] = useState(0)
+  const phaseRef = useRef<Phase>("ready")
+  const recorderRef = useRef<MicRecorder | null>(null)
+  const toggleRef = useRef<() => void>(() => {})
+
+  function setCurrentPhase(next: Phase, note?: string) {
+    phaseRef.current = next
+    setPhase(next)
+    if (note) setMessage(note)
+  }
+
+  async function start() {
+    setCurrentPhase("recording", "Listening... press Alt + W to finish")
+    setTranscript("")
+    setProgress(0)
+    await showBar()
+
+    try {
+      const recorder = new MicRecorder()
+      await recorder.start()
+      recorderRef.current = recorder
+    } catch {
+      setCurrentPhase(
+        "error",
+        "Microphone blocked. Allow mic access and try again.",
+      )
+    }
+  }
+
+  async function finish() {
+    const recorder = recorderRef.current
+    if (!recorder) return
+
+    setCurrentPhase("thinking", "Loading model / transcribing on device")
+    const recording = recorder.stop()
+    recorderRef.current = null
+
+    try {
+      const result = await transcribe(recording, setProgress)
+      setTranscript(result.text)
+      setMessage(
+        result.text.length === 0
+          ? "No speech detected"
+          : result.fillerCleanupSkipped
+            ? "Typed in (filler cleanup skipped)"
+            : "Typed in, fillers removed",
+      )
+      setCurrentPhase("done")
+      await insertText(result.text)
+
+      window.setTimeout(async () => {
+        await hideBar()
+        setCurrentPhase("ready", "Press Alt + W anywhere, then speak")
+      }, 1600)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      setCurrentPhase("error", detail.slice(0, 140) || "Transcription failed")
+    }
+  }
+
+  async function toggle() {
+    if (phaseRef.current === "recording") {
+      await finish()
+    } else if (phaseRef.current === "thinking") {
+      return
+    } else {
+      await start()
+    }
+  }
+
+  // Assign on every render so the global shortcut always sees current state.
+  toggleRef.current = () => {
+    void toggle()
+  }
+
+  useEffect(() => {
+    let disposed = false
+    let stopListening: (() => void) | undefined
+
+    void onToggle(() => toggleRef.current()).then((stop) => {
+      if (disposed) stop()
+      else stopListening = stop
+    })
+
+    if (!isDesktop()) {
+      setMessage("Browser preview: click the orb to record")
+    }
+
+    return () => {
+      disposed = true
+      stopListening?.()
+      recorderRef.current?.stop()
+    }
+  }, [])
+
+  const busy = phase === "thinking"
+
   return (
-    <main className="page-wrap px-4 pb-8 pt-14">
-      <section className="island-shell rise-in relative overflow-hidden rounded-[2rem] px-6 py-10 sm:px-10 sm:py-14">
-        <div className="pointer-events-none absolute -left-20 -top-24 h-56 w-56 rounded-full bg-[radial-gradient(circle,rgba(79,184,178,0.32),transparent_66%)]" />
-        <div className="pointer-events-none absolute -bottom-20 -right-20 h-56 w-56 rounded-full bg-[radial-gradient(circle,rgba(47,106,74,0.18),transparent_66%)]" />
-        <p className="island-kicker mb-3">TanStack Start Base Template</p>
-        <h1 className="display-title mb-5 max-w-3xl text-4xl leading-[1.02] font-bold tracking-tight text-[var(--sea-ink)] sm:text-6xl">
-          Start simple, ship quickly.
-        </h1>
-        <p className="mb-8 max-w-2xl text-base text-[var(--sea-ink-soft)] sm:text-lg">
-          This base starter intentionally keeps things light: two routes, clean
-          structure, and the essentials you need to build from scratch.
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <a
-            href="/about"
-            className="rounded-full border border-[rgba(50,143,151,0.3)] bg-[rgba(79,184,178,0.14)] px-5 py-2.5 text-sm font-semibold text-[var(--lagoon-deep)] no-underline transition hover:-translate-y-0.5 hover:bg-[rgba(79,184,178,0.24)]"
-          >
-            About This Starter
-          </a>
-          <a
-            href="https://tanstack.com/router"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-full border border-[rgba(23,58,64,0.2)] bg-white/50 px-5 py-2.5 text-sm font-semibold text-[var(--sea-ink)] no-underline transition hover:-translate-y-0.5 hover:border-[rgba(23,58,64,0.35)]"
-          >
-            Router Guide
-          </a>
+    <main className="stage">
+      <div className={`pill ${phase}`}>
+        <button
+          type="button"
+          className="orb"
+          onClick={() => toggleRef.current()}
+          disabled={busy}
+          aria-label={phase === "recording" ? "Stop dictation" : "Start dictation"}
+        >
+          {phase === "recording" ? (
+            <span className="wave" aria-hidden="true">
+              {[0, 1, 2, 3, 4].map((bar) => (
+                <i key={bar} style={{ animationDelay: `${bar * 90}ms` }} />
+              ))}
+            </span>
+          ) : busy ? (
+            <span className="spinner" aria-hidden="true" />
+          ) : (
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path
+                d="M12 15.2a3.6 3.6 0 0 0 3.6-3.6V6.1a3.6 3.6 0 1 0-7.2 0v5.5A3.6 3.6 0 0 0 12 15.2Zm6-5.5a6 6 0 0 1-12 0M12 18.3v2.4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+              />
+            </svg>
+          )}
+        </button>
+
+        <div className="copy">
+          <span className="title">
+            {BAR_LABEL[phase]}
+            {phase === "recording" && <span className="live-dot" />}
+          </span>
+          <span className="status">{message}</span>
+          {phase === "thinking" && progress > 0 && progress < 1 && (
+            <span className="track">
+              <i style={{ width: `${Math.round(progress * 100)}%` }} />
+            </span>
+          )}
+          {phase === "done" && transcript && (
+            <button
+              type="button"
+              className="copy-link"
+              onClick={() => void copyText(transcript)}
+            >
+              Copy transcript
+            </button>
+          )}
         </div>
-      </section>
 
-      <section className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          [
-            'Type-Safe Routing',
-            'Routes and links stay in sync across every page.',
-          ],
-          [
-            'Server Functions',
-            'Call server code from your UI without creating API boilerplate.',
-          ],
-          [
-            'Streaming by Default',
-            'Ship progressively rendered responses for faster experiences.',
-          ],
-          [
-            'Tailwind Native',
-            'Design quickly with utility-first styling and reusable tokens.',
-          ],
-        ].map(([title, desc], index) => (
-          <article
-            key={title}
-            className="island-shell feature-card rise-in rounded-2xl p-5"
-            style={{ animationDelay: `${index * 90 + 80}ms` }}
-          >
-            <h2 className="mb-2 text-base font-semibold text-[var(--sea-ink)]">
-              {title}
-            </h2>
-            <p className="m-0 text-sm text-[var(--sea-ink-soft)]">{desc}</p>
-          </article>
-        ))}
-      </section>
-
-      <section className="island-shell mt-8 rounded-2xl p-6">
-        <p className="island-kicker mb-2">Quick Start</p>
-        <ul className="m-0 list-disc space-y-2 pl-5 text-sm text-[var(--sea-ink-soft)]">
-          <li>
-            Edit <code>src/routes/index.tsx</code> to customize the home page.
-          </li>
-          <li>
-            Update <code>src/components/Header.tsx</code> and{' '}
-            <code>src/components/Footer.tsx</code> for brand links.
-          </li>
-          <li>
-            Add routes in <code>src/routes</code> and tweak visual tokens in{' '}
-            <code>src/styles.css</code>.
-          </li>
-        </ul>
-      </section>
+        <kbd className="shortcut">Alt + W</kbd>
+      </div>
     </main>
   )
 }
