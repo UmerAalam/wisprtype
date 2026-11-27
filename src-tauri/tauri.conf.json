@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.wisprtype.desktop",
   "build": {
-    "frontendDist": "../apps/web/dist",
+    "frontendDist": "../apps/web/dist/client",
     "devUrl": "http://localhost:3000",
     "beforeDevCommand": "npm run dev --workspace=web",
     "beforeBuildCommand": "npm run build --workspace=web"
