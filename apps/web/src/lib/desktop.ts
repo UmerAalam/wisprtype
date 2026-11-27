@@ -12,8 +12,8 @@ export async function onToggle(handler: () => void): Promise<() => void> {
   return listen("wispr-toggle", handler)
 }
 
-export async function showBar(): Promise<void> {
-  if (isDesktop()) await invoke("show_bar")
+export async function showBar(focus = true): Promise<void> {
+  if (isDesktop()) await invoke("show_bar", { focus })
 }
 
 export async function hideBar(): Promise<void> {

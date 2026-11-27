@@ -111,6 +111,16 @@ export async function preloadEngine(
   ])
 }
 
+/** Fast Voz-only pass for live mode, where latency matters more than cleanup. */
+export async function transcribeChunk(
+  samples: Float32Array,
+  sampleRate: number,
+): Promise<Word[]> {
+  const voz = await getVoz(() => {})
+  const result = await voz.transcribe({ samples, sampleRate })
+  return result.words ?? []
+}
+
 function labelSpeakers(words: Word[], turns: WhoTurn[]): Word[] {
   return words.map((word) => {
     const midpoint = (word.start + word.end) / 2

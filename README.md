@@ -11,8 +11,10 @@ The app is a Tauri 2 desktop shell around a TanStack Start UI. Speech recognitio
 - **Filler removal** matched to the transcript's word timings (Uhm)
 - **Speaker labeling** for multi-speaker audio, with `Speaker 1:` lines (Who)
 - **Types into the focused field** using keyboard simulation, so it works in any Windows text field
+- **Recording and Live modes** from the pill dropdown: one cleans a finished note, the other types as you speak
+- **Sound-reactive waveform** driven by the microphone spectrum, with a blinking listening dot and thicker pink outline
 - **No cloud inference, no per-minute bill** after the one-time model download
-- Smooth pill animation, live waveform, spinner and model download progress
+- Smooth pill animation, spinner and model download progress
 - Monorepo layout: web UI in `apps/web`, shared packages, native shell in `src-tauri`
 
 ## How it works

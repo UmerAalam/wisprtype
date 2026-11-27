@@ -10,16 +10,30 @@ import {
   onToggle,
   showBar,
 } from "../lib/desktop"
-import { preloadEngine, transcribe } from "../lib/engine"
+import {
+  preloadEngine,
+  transcribe,
+  transcribeChunk,
+  type Word,
+} from "../lib/engine"
 
 export const Route = createFileRoute("/")({ component: WisprBar })
 
-type Phase = "warming" | "ready" | "recording" | "thinking" | "done" | "error"
+type Phase =
+  | "warming"
+  | "ready"
+  | "recording"
+  | "live"
+  | "thinking"
+  | "done"
+  | "error"
+type Mode = "notes" | "live"
 
 const BAR_LABEL: Record<Phase, string> = {
   warming: "Warming up models",
   ready: "Ready when you are",
-  recording: "Listening...",
+  recording: "",
+  live: "",
   thinking: "Transcribing on device",
   done: "Typed into your field",
   error: "Something went wrong",
@@ -28,13 +42,20 @@ const BAR_LABEL: Record<Phase, string> = {
 function WisprBar() {
   const [phase, setPhase] = useState<Phase>("warming")
   const [message, setMessage] = useState(
-    "Loading Voz and Uhm locally. First launch may take a minute.",
+    "Loading Voz, Uhm and Who locally. First launch may take a minute.",
   )
   const [transcript, setTranscript] = useState("")
   const [progress, setProgress] = useState(0)
+  const [mode, setMode] = useState<Mode>("notes")
+  const [levels, setLevels] = useState<number[]>(() => Array(7).fill(0))
   const phaseRef = useRef<Phase>("warming")
+  const modeRef = useRef<Mode>("notes")
   const recorderRef = useRef<MicRecorder | null>(null)
   const toggleRef = useRef<() => void>(() => {})
+  const liveTimerRef = useRef<number | null>(null)
+  const liveBusyRef = useRef(false)
+  const liveEndRef = useRef(0)
+  const liveTextRef = useRef("")
 
   function setCurrentPhase(next: Phase, note?: string) {
     phaseRef.current = next
@@ -42,16 +63,85 @@ function WisprBar() {
     if (note) setMessage(note)
   }
 
+  function chooseMode(next: Mode) {
+    modeRef.current = next
+    setMode(next)
+  }
+
+  function stopLiveTimer() {
+    if (liveTimerRef.current !== null) {
+      window.clearInterval(liveTimerRef.current)
+      liveTimerRef.current = null
+    }
+  }
+
+  async function typeFreshWords(words: Word[], offset = 0) {
+    if (words.length === 0) return
+    const chunk = words
+      .map((word) => word.text)
+      .join(" ")
+      .trim()
+    if (!chunk) return
+
+    const prefix = liveTextRef.current ? " " : ""
+    await insertText(prefix + chunk)
+    liveTextRef.current += prefix + chunk
+    setTranscript(liveTextRef.current)
+    liveEndRef.current = Math.max(...words.map((word) => word.end + offset))
+
+    // insertText hides the window to return focus to the target field.
+    // Re-show it without taking focus so the live indicator stays visible.
+    window.setTimeout(() => {
+      void showBar(false)
+    }, 300)
+  }
+
+  async function insertLiveChunk() {
+    const recorder = recorderRef.current
+    if (!recorder || liveBusyRef.current) return
+    const snapshot = recorder.snapshot()
+    const offset = Math.max(0, liveEndRef.current - 0.75)
+    if (snapshot.durationSeconds < offset + 2) return
+
+    const slice = snapshot.samples.subarray(
+      Math.floor(offset * snapshot.sampleRate),
+    )
+    liveBusyRef.current = true
+    try {
+      const words = await transcribeChunk(slice, snapshot.sampleRate)
+      const fresh = words.filter(
+        (word) => word.start + offset >= liveEndRef.current - 0.08,
+      )
+      await typeFreshWords(fresh, offset)
+    } catch (error) {
+      console.warn("Live transcription chunk failed:", error)
+    } finally {
+      liveBusyRef.current = false
+    }
+  }
+
   async function start() {
-    setCurrentPhase("recording", "Listening... press Alt + W to finish")
+    const selected = modeRef.current
+    setCurrentPhase(selected === "live" ? "live" : "recording")
+    setMessage("")
     setTranscript("")
     setProgress(0)
+    if (selected === "live") {
+      liveEndRef.current = 0
+      liveTextRef.current = ""
+      liveBusyRef.current = false
+    }
     await showBar()
 
     try {
       const recorder = new MicRecorder()
       await recorder.start()
       recorderRef.current = recorder
+      if (selected === "live") {
+        liveTimerRef.current = window.setInterval(() => {
+          void insertLiveChunk()
+        }, 3000)
+      }
     } catch {
       setCurrentPhase(
         "error",
@@ -63,6 +153,30 @@ function WisprBar() {
   async function finish() {
     const recorder = recorderRef.current
     if (!recorder) return
+    stopLiveTimer()
+
+    if (modeRef.current === "live") {
+      const recording = recorder.stop()
+      recorderRef.current = null
+      try {
+        const words = await transcribeChunk(
+          recording.samples,
+          recording.sampleRate,
+        )
+        const fresh = words.filter(
+          (word) => word.start >= liveEndRef.current - 0.08,
+        )
+        await typeFreshWords(fresh)
+      } catch (error) {
+        console.warn("Final live chunk failed:", error)
+      }
+      setCurrentPhase("done", "Live mode stopped")
+      window.setTimeout(async () => {
+        await hideBar()
+        setCurrentPhase("ready", "Press Alt + W anywhere, then speak")
+      }, 1400)
+      return
+    }
 
     setCurrentPhase("thinking", "Loading model / transcribing on device")
     const recording = recorder.stop()
@@ -97,7 +211,7 @@ function WisprBar() {
   }
 
   async function toggle() {
-    if (phaseRef.current === "recording") {
+    if (phaseRef.current === "recording" || phaseRef.current === "live") {
       await finish()
     } else if (phaseRef.current === "thinking") {
       return
@@ -139,33 +253,56 @@ function WisprBar() {
     return () => {
       disposed = true
       stopListening?.()
+      stopLiveTimer()
       recorderRef.current?.stop()
     }
   }, [])
 
   const busy = phase === "thinking"
+  const listening = phase === "recording" || phase === "live"
+  const locked = listening || busy
+
+  useEffect(() => {
+    if (!listening) {
+      setLevels(Array(7).fill(0))
+      return
+    }
+    let frame = 0
+    const tick = () => {
+      setLevels(recorderRef.current?.getLevels(7) ?? Array(7).fill(0))
+      frame = window.requestAnimationFrame(tick)
+    }
+    frame = window.requestAnimationFrame(tick)
+    return () => window.cancelAnimationFrame(frame)
+  }, [listening])
 
   return (
     <main className="flex h-screen w-screen items-center justify-center bg-transparent p-3">
       <div
-        className={`card !flex-row !rounded-full w-full max-w-[460px] items-center gap-3 border bg-transparent p-2 shadow-none ${
-          phase === "recording"
-            ? "border-error/50"
+        className={`card !flex-row !rounded-full w-full max-w-[460px] items-center gap-3 border bg-[linear-gradient(135deg,rgba(23,38,47,0.94),rgba(13,24,31,0.96))] p-2 shadow-none backdrop-blur-xl ${
+          listening
+            ? "border-2 border-error/70"
             : phase === "thinking"
-              ? "border-primary/40"
-              : "border-base-300/30"
+              ? "border-2 border-primary/50"
+              : "border border-base-300/30"
         }`}
       >
         <button
           type="button"
           className={`btn btn-circle btn-sm shrink-0 ${
-            phase === "recording" ? "btn-error" : "btn-primary"
+            listening ? "btn-error" : "btn-primary"
           }`}
           onClick={() => toggleRef.current()}
           disabled={busy}
-          aria-label={phase === "recording" ? "Stop dictation" : "Start dictation"}
+          aria-label={
+            phase === "recording"
+              ? "Stop dictation"
+              : phase === "live"
+                ? "Stop live mode"
+                : "Start dictation"
+          }
         >
-          {phase === "recording" ? (
+          {listening ? (
             <span className="loading loading-dots loading-xs" aria-hidden="true" />
           ) : busy ? (
             <span className="loading loading-spinner loading-xs" aria-hidden="true" />
@@ -183,13 +320,30 @@ function WisprBar() {
         </button>
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <span>{BAR_LABEL[phase]}</span>
-            {phase === "recording" && (
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-error" />
-            )}
-          </div>
-          <div className="truncate text-xs opacity-60">{message}</div>
+          {listening ? (
+            <div className="flex h-5 items-center gap-2">
+              <span
+                className="inline-block h-2 w-2 animate-pulse rounded-full bg-error"
+                aria-label="Listening"
+              />
+              <div className="flex h-5 items-end gap-0.5" aria-hidden="true">
+                {levels.map((level, index) => (
+                  <span
+                    key={index}
+                    className="w-1 rounded-full bg-error/80 transition-[height] duration-75"
+                    style={{
+                      height: `${Math.max(3, Math.round(level * 20))}px`,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="text-sm font-semibold">{BAR_LABEL[phase]}</div>
+              <div className="truncate text-xs opacity-60">{message}</div>
+            </>
+          )}
           {(phase === "warming" || phase === "thinking") &&
             progress > 0 &&
             progress < 1 && (
@@ -208,6 +362,50 @@ function WisprBar() {
               Copy transcript
             </button>
           )}
+        </div>
+
+        <div className="dropdown dropdown-end dropdown-top shrink-0">
+          <div
+            tabIndex={0}
+            role="button"
+            className="btn btn-ghost btn-xs"
+            aria-label="Choose dictation mode"
+          >
+            {mode === "notes" ? "Notes" : "Live"}
+          </div>
+          <ul
+            tabIndex={0}
+            className="dropdown-content menu menu-sm z-50 w-44 rounded-box bg-base-200 p-1 shadow"
+          >
+            <li>
+              <button
+                type="button"
+                className={mode === "notes" ? "active" : ""}
+                disabled={locked}
+                onClick={() => chooseMode("notes")}
+              >
+                <span className="flex flex-col items-start">
+                  <span>Recording</span>
+                  <span className="text-[10px] opacity-60">for notetaking</span>
+                </span>
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className={mode === "live" ? "active" : ""}
+                disabled={locked}
+                onClick={() => chooseMode("live")}
+              >
+                <span className="flex flex-col items-start">
+                  <span>Live mode</span>
+                  <span className="text-[10px] opacity-60">
+                    types as you speak
+                  </span>
+                </span>
+              </button>
+            </li>
+          </ul>
         </div>
 
         <kbd className="kbd kbd-xs shrink-0">Alt + W</kbd>

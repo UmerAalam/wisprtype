@@ -36,9 +36,11 @@ pub fn run() {
 }
 
 #[tauri::command]
-fn show_bar(window: tauri::Window) {
+fn show_bar(window: tauri::Window, focus: Option<bool>) {
     let _ = window.show();
-    let _ = window.set_focus();
+    if focus.unwrap_or(true) {
+        let _ = window.set_focus();
+    }
 }
 
 #[tauri::command]
