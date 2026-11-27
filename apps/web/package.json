@@ -14,6 +14,7 @@
   "dependencies": {
     "@desert-ant-labs/uhm": "^6.0.0",
     "@desert-ant-labs/voz": "^6.0.0",
+    "@desert-ant-labs/who": "^6.0.0",
     "@litertjs/core": "^2.6.0",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-devtools": "0.10.15",
@@ -22,6 +23,7 @@
     "@tanstack/react-start": "1.169.7",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
+    "daisyui": "^5.8.3",
     "onnxruntime-web": "^1.31.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

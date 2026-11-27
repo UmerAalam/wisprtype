@@ -2,13 +2,14 @@
 
 A local-first, open alternative to Wispr Flow. Press **Alt + W** anywhere on Windows, speak, and the cleaned transcript is typed straight into the field you were using. Audio never leaves your machine.
 
-The app is a Tauri 2 desktop shell around a TanStack Start UI. Speech recognition and filler cleanup run on-device with small specialized models from [Desert Ant Labs](https://desertant.com/): [Voz](https://desertant.com/models/voz/) for transcription and [Uhm](https://desertant.com/models/uhm/) for removing "um", "uh" and "hmm" spans.
+The app is a Tauri 2 desktop shell around a TanStack Start UI. Speech recognition, filler cleanup and speaker labeling run on-device with small specialized models from [Desert Ant Labs](https://desertant.com/): [Voz](https://desertant.com/models/voz/) for transcription, [Uhm](https://desertant.com/models/uhm/) for removing "um", "uh" and "hmm" spans, and [Who](https://desertant.com/models/who/) for labeling who said what.
 
 ## Features
 
 - **Global Alt + W** floating bar that appears over any application
 - **On-device transcription** with word-level timestamps (Voz)
 - **Filler removal** matched to the transcript's word timings (Uhm)
+- **Speaker labeling** for multi-speaker audio, with `Speaker 1:` lines (Who)
 - **Types into the focused field** using keyboard simulation, so it works in any Windows text field
 - **No cloud inference, no per-minute bill** after the one-time model download
 - Smooth pill animation, live waveform, spinner and model download progress
@@ -22,7 +23,8 @@ flowchart LR
   B --> C[Raw PCM captured in the webview]
   C --> D[Voz transcribes locally]
   D --> E[Uhm marks filler spans and cleans words]
-  E --> F[Hide bar, type text into previous field]
+  E --> G[Who labels speaker turns]
+  G --> F[Hide bar, type text into previous field]
 ```
 
 The global shortcut is registered in Rust and forwarded to the webview as an event. The webview owns the recording state machine, so the UI can finish transcribing before the window closes.
@@ -77,17 +79,19 @@ Installers are written to `src-tauri/target/release/bundle` (MSI and NSIS).
 | --- | --- | --- | --- |
 | Voz | Transcript + word timestamps | about 409 MB | 25 languages; needs WebGPU; roughly 1.2 GB resident memory while loaded |
 | Uhm | Filler spans aligned to words | about 51 MB | Trained on English; transfers acoustically to Spanish, French, German and Dutch |
+| Who | Speaker turns with timestamps | about 32 MB (8-bit) | CPU/LiteRT in the browser; up to 4 speakers per 5-minute section; pair with Voz for labeled transcripts |
 
-Both models download from Hugging Face on first use and are cached afterwards. No account or token is required for the download. Set `HF_TOKEN` only if you hit Hugging Face rate limits. Audio, text and model files stay on the device; there is no inference server.
+All three models download from Hugging Face and load into memory when the app launches, then stay cached and resident for later dictations. No account or token is required for the download. Set `HF_TOKEN` only if you hit Hugging Face rate limits. Audio, text and model files stay on the device; there is no inference server.
 
 For a production release, Desert Ant requires a free API key from [platform.desertant.com](https://platform.desertant.com), configured with `DesertAnt.configure({ apiKey })` before the first model load. Development works without one. Their SDK and weights use the [Desert Ant Labs Source-Available License](https://license.desertant.com/), not MIT; review it before distributing a commercial build.
 
 ## Known limits
 
-- First dictation downloads the models. Prefer doing this during onboarding in a shipped app.
+- First launch downloads and warms all three models; dictation after that starts immediately.
 - Voz needs a WebGPU-capable WebView2. Without a usable GPU it falls back to CPU and is much slower.
 - Voz does not detect language. Unsupported languages can produce confident but wrong text.
 - Uhm is English-first; filler cleanup is less reliable with music, laughter or overlapping speakers.
+- Who is beta, runs on CPU in the browser, and works best with close-miked voices; speaker labels are numbers, not names.
 - Typing targets the field that had focus before the bar opened. It uses clipboard-free keyboard simulation through `enigo`, so very long transcripts type more slowly than a paste would.
 - The attached `image.png` pill reference in the build request could not be inspected by the agent; the pill design here follows the written description.
 
@@ -113,7 +117,6 @@ wispr-type/
 
 ## Roadmap
 
-- Preload models during onboarding with visible progress
 - Language detection before transcription
 - Custom vocabulary for names and technical terms
 - Tray icon and settings window

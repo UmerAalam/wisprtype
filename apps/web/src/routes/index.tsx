@@ -10,13 +10,14 @@ import {
   onToggle,
   showBar,
 } from "../lib/desktop"
-import { transcribe } from "../lib/engine"
+import { preloadEngine, transcribe } from "../lib/engine"
 
 export const Route = createFileRoute("/")({ component: WisprBar })
 
-type Phase = "ready" | "recording" | "thinking" | "done" | "error"
+type Phase = "warming" | "ready" | "recording" | "thinking" | "done" | "error"
 
 const BAR_LABEL: Record<Phase, string> = {
+  warming: "Warming up models",
   ready: "Ready when you are",
   recording: "Listening...",
   thinking: "Transcribing on device",
@@ -25,13 +26,13 @@ const BAR_LABEL: Record<Phase, string> = {
 }
 
 function WisprBar() {
-  const [phase, setPhase] = useState<Phase>("ready")
+  const [phase, setPhase] = useState<Phase>("warming")
   const [message, setMessage] = useState(
-    "Press Alt + W anywhere, then speak",
+    "Loading Voz and Uhm locally. First launch may take a minute.",
   )
   const [transcript, setTranscript] = useState("")
   const [progress, setProgress] = useState(0)
-  const phaseRef = useRef<Phase>("ready")
+  const phaseRef = useRef<Phase>("warming")
   const recorderRef = useRef<MicRecorder | null>(null)
   const toggleRef = useRef<() => void>(() => {})
 
@@ -70,12 +71,17 @@ function WisprBar() {
     try {
       const result = await transcribe(recording, setProgress)
       setTranscript(result.text)
+      const notes: string[] = []
+      if (!result.fillerCleanupSkipped) notes.push("fillers removed")
+      if (result.speakerCount > 1 && !result.speakerDiarizationSkipped) {
+        notes.push(`${result.speakerCount} speakers labeled`)
+      }
       setMessage(
         result.text.length === 0
           ? "No speech detected"
-          : result.fillerCleanupSkipped
-            ? "Typed in (filler cleanup skipped)"
-            : "Typed in, fillers removed",
+          : notes.length > 0
+            ? `Typed in, ${notes.join(" and ")}`
+            : "Typed in",
       )
       setCurrentPhase("done")
       await insertText(result.text)
@@ -114,6 +120,18 @@ function WisprBar() {
       else stopListening = stop
     })
 
+    void preloadEngine(setProgress)
+      .then(() => {
+        if (!disposed && phaseRef.current === "warming") {
+          setCurrentPhase("ready", "Press Alt + W anywhere, then speak")
+        }
+      })
+      .catch(() => {
+        if (!disposed && phaseRef.current === "warming") {
+          setCurrentPhase("ready", "Models will load on first dictation")
+        }
+      })
+
     if (!isDesktop()) {
       setMessage("Browser preview: click the orb to record")
     }
@@ -128,23 +146,29 @@ function WisprBar() {
   const busy = phase === "thinking"
 
   return (
-    <main className="stage">
-      <div className={`pill ${phase}`}>
+    <main className="flex h-screen w-screen items-center justify-center bg-transparent p-3">
+      <div
+        className={`card !flex-row !rounded-full w-full max-w-[460px] items-center gap-3 border bg-transparent p-2 shadow-none ${
+          phase === "recording"
+            ? "border-error/50"
+            : phase === "thinking"
+              ? "border-primary/40"
+              : "border-base-300/30"
+        }`}
+      >
         <button
           type="button"
-          className="orb"
+          className={`btn btn-circle btn-sm shrink-0 ${
+            phase === "recording" ? "btn-error" : "btn-primary"
+          }`}
           onClick={() => toggleRef.current()}
           disabled={busy}
           aria-label={phase === "recording" ? "Stop dictation" : "Start dictation"}
         >
           {phase === "recording" ? (
-            <span className="wave" aria-hidden="true">
-              {[0, 1, 2, 3, 4].map((bar) => (
-                <i key={bar} style={{ animationDelay: `${bar * 90}ms` }} />
-              ))}
-            </span>
+            <span className="loading loading-dots loading-xs" aria-hidden="true" />
           ) : busy ? (
-            <span className="spinner" aria-hidden="true" />
+            <span className="loading loading-spinner loading-xs" aria-hidden="true" />
           ) : (
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
               <path
@@ -158,21 +182,27 @@ function WisprBar() {
           )}
         </button>
 
-        <div className="copy">
-          <span className="title">
-            {BAR_LABEL[phase]}
-            {phase === "recording" && <span className="live-dot" />}
-          </span>
-          <span className="status">{message}</span>
-          {phase === "thinking" && progress > 0 && progress < 1 && (
-            <span className="track">
-              <i style={{ width: `${Math.round(progress * 100)}%` }} />
-            </span>
-          )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <span>{BAR_LABEL[phase]}</span>
+            {phase === "recording" && (
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-error" />
+            )}
+          </div>
+          <div className="truncate text-xs opacity-60">{message}</div>
+          {(phase === "warming" || phase === "thinking") &&
+            progress > 0 &&
+            progress < 1 && (
+              <progress
+                className="progress progress-primary mt-1 h-1 w-full"
+                value={progress}
+                max={1}
+              />
+            )}
           {phase === "done" && transcript && (
             <button
               type="button"
-              className="copy-link"
+              className="btn btn-ghost btn-xs mt-1 h-auto min-h-0 px-0 text-primary"
               onClick={() => void copyText(transcript)}
             >
               Copy transcript
@@ -180,7 +210,7 @@ function WisprBar() {
           )}
         </div>
 
-        <kbd className="shortcut">Alt + W</kbd>
+        <kbd className="kbd kbd-xs shrink-0">Alt + W</kbd>
       </div>
     </main>
   )
