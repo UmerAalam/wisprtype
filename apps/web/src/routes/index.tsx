@@ -1,4 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router"
+import {
+  ChevronDown,
+  LoaderCircle,
+  Mic,
+  NotebookPen,
+  Radio,
+  X,
+} from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import { MicRecorder } from "../lib/audio"
@@ -210,6 +218,17 @@ function WisprBar() {
     }
   }
 
+  /** Hides the bar without typing. Stops capture first so the mic is not left open behind a hidden window. */
+  async function dismissBar() {
+    stopLiveTimer()
+    if (recorderRef.current) {
+      recorderRef.current.stop()
+      recorderRef.current = null
+    }
+    await hideBar()
+    setCurrentPhase("ready", "Press Alt + W anywhere, then speak")
+  }
+
   async function toggle() {
     if (phaseRef.current === "recording" || phaseRef.current === "live") {
       await finish()
@@ -279,7 +298,7 @@ function WisprBar() {
   return (
     <main className="flex h-screen w-screen items-center justify-center bg-transparent p-3">
       <div
-        className={`card !flex-row !rounded-full w-full max-w-[460px] items-center gap-3 border bg-[linear-gradient(135deg,rgba(23,38,47,0.94),rgba(13,24,31,0.96))] p-2 shadow-none backdrop-blur-xl ${
+        className={`card !flex-row !rounded-full w-full max-w-[380px] items-center gap-2 border bg-[linear-gradient(135deg,rgba(23,38,47,0.94),rgba(13,24,31,0.96))] p-2 shadow-none backdrop-blur-xl ${
           listening
             ? "border-2 border-error/70"
             : phase === "thinking"
@@ -305,17 +324,9 @@ function WisprBar() {
           {listening ? (
             <span className="loading loading-dots loading-xs" aria-hidden="true" />
           ) : busy ? (
-            <span className="loading loading-spinner loading-xs" aria-hidden="true" />
+            <LoaderCircle className="animate-spin" size={16} aria-hidden="true" />
           ) : (
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path
-                d="M12 15.2a3.6 3.6 0 0 0 3.6-3.6V6.1a3.6 3.6 0 1 0-7.2 0v5.5A3.6 3.6 0 0 0 12 15.2Zm6-5.5a6 6 0 0 1-12 0M12 18.3v2.4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-              />
-            </svg>
+            <Mic size={17} strokeWidth={2.1} aria-hidden="true" />
           )}
         </button>
 
@@ -368,10 +379,16 @@ function WisprBar() {
           <div
             tabIndex={0}
             role="button"
-            className="btn btn-ghost btn-xs"
+            className="btn btn-ghost btn-xs gap-1 px-1.5"
             aria-label="Choose dictation mode"
           >
+            {mode === "notes" ? (
+              <NotebookPen size={13} strokeWidth={2.2} aria-hidden="true" />
+            ) : (
+              <Radio size={13} strokeWidth={2.2} aria-hidden="true" />
+            )}
             {mode === "notes" ? "Notes" : "Live"}
+            <ChevronDown size={13} className="opacity-60" aria-hidden="true" />
           </div>
           <ul
             tabIndex={0}
@@ -384,6 +401,7 @@ function WisprBar() {
                 disabled={locked}
                 onClick={() => chooseMode("notes")}
               >
+                <NotebookPen size={15} aria-hidden="true" />
                 <span className="flex flex-col items-start">
                   <span>Recording</span>
                   <span className="text-[10px] opacity-60">for notetaking</span>
@@ -397,6 +415,7 @@ function WisprBar() {
                 disabled={locked}
                 onClick={() => chooseMode("live")}
               >
+                <Radio size={15} aria-hidden="true" />
                 <span className="flex flex-col items-start">
                   <span>Live mode</span>
                   <span className="text-[10px] opacity-60">
@@ -409,6 +428,16 @@ function WisprBar() {
         </div>
 
         <kbd className="kbd kbd-xs shrink-0">Alt + W</kbd>
+
+        <button
+          type="button"
+          className="btn btn-circle btn-ghost btn-xs shrink-0"
+          onClick={() => void dismissBar()}
+          disabled={busy}
+          aria-label="Close bar"
+        >
+          <X size={14} strokeWidth={2.4} aria-hidden="true" />
+        </button>
       </div>
     </main>
   )

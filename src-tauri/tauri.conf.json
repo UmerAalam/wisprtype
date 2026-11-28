@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "WisprType",
-        "width": 460,
+        "width": 380,
         "height": 96,
-        "minWidth": 460,
+        "minWidth": 380,
         "minHeight": 96,
         "resizable": false,
         "decorations": false,
