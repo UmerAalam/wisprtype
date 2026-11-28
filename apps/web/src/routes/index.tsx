@@ -7,7 +7,8 @@ import {
   Radio,
   X,
 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { AnimatePresence, motion, type Variants } from "motion/react"
+import { useEffect, useRef, useState, type CSSProperties } from "react"
 
 import { MicRecorder } from "../lib/audio"
 import {
@@ -28,13 +29,7 @@ import {
 export const Route = createFileRoute("/")({ component: WisprBar })
 
 type Phase =
-  | "warming"
-  | "ready"
-  | "recording"
-  | "live"
-  | "thinking"
-  | "done"
-  | "error"
+  "warming" | "ready" | "recording" | "live" | "thinking" | "done" | "error"
 type Mode = "notes" | "live"
 
 const BAR_LABEL: Record<Phase, string> = {
@@ -42,10 +37,48 @@ const BAR_LABEL: Record<Phase, string> = {
   ready: "Ready when you are",
   recording: "",
   live: "",
-  thinking: "Transcribing on device",
+  thinking: "Transcribing",
   done: "Typed into your field",
   error: "Something went wrong",
 }
+
+const IDLE_ORB = "#3590f3"
+const STOP_RED = "#ff002b"
+
+const pillVariant: Variants = {
+  open: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: { type: "spring", stiffness: 400, damping: 30, mass: 0.8 },
+  },
+  closed: {
+    opacity: 0,
+    y: 14,
+    scale: 0.96,
+    transition: { duration: 0.18, ease: "easeIn" },
+  },
+}
+
+// Labels only, never inline objects: the pill re-renders many times a second
+// while the mic is open, and a fresh object identity restarts the gesture.
+const closeVariant: Variants = {
+  open: {
+    opacity: 1,
+    scale: 1,
+    transition: { type: "spring", stiffness: 480, damping: 24, delay: 0.09 },
+  },
+  closed: {
+    opacity: 0,
+    scale: 0.4,
+    transition: { duration: 0.15, ease: "easeIn" },
+  },
+  hover: { scale: 1.07 },
+  tapped: { scale: 0.93 },
+}
+
+const orbFill: CSSProperties = { backgroundColor: IDLE_ORB }
+const closeFill: CSSProperties = { backgroundColor: STOP_RED }
 
 function WisprBar() {
   const [phase, setPhase] = useState<Phase>("warming")
@@ -56,6 +89,9 @@ function WisprBar() {
   const [progress, setProgress] = useState(0)
   const [mode, setMode] = useState<Mode>("notes")
   const [levels, setLevels] = useState<number[]>(() => Array(7).fill(0))
+  // The native window only exists while shown, so the bar mounts on demand and
+  // AnimatePresence can run its exit before hide_bar tears the window down.
+  const [barOpen, setBarOpen] = useState(() => !isDesktop())
   const phaseRef = useRef<Phase>("warming")
   const modeRef = useRef<Mode>("notes")
   const recorderRef = useRef<MicRecorder | null>(null)
@@ -140,6 +176,7 @@ function WisprBar() {
       liveBusyRef.current = false
     }
     await showBar()
+    setBarOpen(true)
 
     try {
       const recorder = new MicRecorder()
@@ -179,8 +216,8 @@ function WisprBar() {
         console.warn("Final live chunk failed:", error)
       }
       setCurrentPhase("done", "Live mode stopped")
-      window.setTimeout(async () => {
-        await hideBar()
+      window.setTimeout(() => {
+        setBarOpen(false)
         setCurrentPhase("ready", "Press Alt + W anywhere, then speak")
       }, 1400)
       return
@@ -208,8 +245,8 @@ function WisprBar() {
       setCurrentPhase("done")
       await insertText(result.text)
 
-      window.setTimeout(async () => {
-        await hideBar()
+      window.setTimeout(() => {
+        setBarOpen(false)
         setCurrentPhase("ready", "Press Alt + W anywhere, then speak")
       }, 1600)
     } catch (error) {
@@ -225,7 +262,7 @@ function WisprBar() {
       recorderRef.current.stop()
       recorderRef.current = null
     }
-    await hideBar()
+    setBarOpen(false)
     setCurrentPhase("ready", "Press Alt + W anywhere, then speak")
   }
 
@@ -296,149 +333,187 @@ function WisprBar() {
   }, [listening])
 
   return (
-    <main className="flex h-screen w-screen items-center justify-center bg-transparent p-3">
-      <div
-        className={`card !flex-row !rounded-full w-full max-w-[380px] items-center gap-2 border bg-[linear-gradient(135deg,rgba(23,38,47,0.94),rgba(13,24,31,0.96))] p-2 shadow-none backdrop-blur-xl ${
-          listening
-            ? "border-2 border-error/70"
-            : phase === "thinking"
-              ? "border-2 border-primary/50"
-              : "border border-base-300/30"
-        }`}
-      >
-        <button
-          type="button"
-          className={`btn btn-circle btn-sm shrink-0 ${
-            listening ? "btn-error" : "btn-primary"
-          }`}
-          onClick={() => toggleRef.current()}
-          disabled={busy}
-          aria-label={
-            phase === "recording"
-              ? "Stop dictation"
-              : phase === "live"
-                ? "Stop live mode"
-                : "Start dictation"
-          }
-        >
-          {listening ? (
-            <span className="loading loading-dots loading-xs" aria-hidden="true" />
-          ) : busy ? (
-            <LoaderCircle className="animate-spin" size={16} aria-hidden="true" />
-          ) : (
-            <Mic size={17} strokeWidth={2.1} aria-hidden="true" />
-          )}
-        </button>
-
-        <div className="min-w-0 flex-1">
-          {listening ? (
-            <div className="flex h-5 items-center gap-2">
-              <span
-                className="inline-block h-2 w-2 animate-pulse rounded-full bg-error"
-                aria-label="Listening"
-              />
-              <div className="flex h-5 items-end gap-0.5" aria-hidden="true">
-                {levels.map((level, index) => (
-                  <span
-                    key={index}
-                    className="w-1 rounded-full bg-error/80 transition-[height] duration-75"
-                    style={{
-                      height: `${Math.max(3, Math.round(level * 20))}px`,
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="text-sm font-semibold">{BAR_LABEL[phase]}</div>
-              <div className="truncate text-xs opacity-60">{message}</div>
-            </>
-          )}
-          {(phase === "warming" || phase === "thinking") &&
-            progress > 0 &&
-            progress < 1 && (
-              <progress
-                className="progress progress-primary mt-1 h-1 w-full"
-                value={progress}
-                max={1}
-              />
-            )}
-          {phase === "done" && transcript && (
+    <main className="flex h-screen w-screen items-center justify-center gap-3 bg-transparent p-3">
+      <AnimatePresence onExitComplete={() => void hideBar()}>
+        {barOpen && (
+          <motion.div
+            key="wispr-pill"
+            variants={pillVariant}
+            initial="closed"
+            animate="open"
+            exit="closed"
+            className={`card !flex-row !rounded-full w-full max-w-[380px] items-center gap-2 border bg-[linear-gradient(135deg,rgba(23,38,47,0.94),rgba(13,24,31,0.96))] p-2 shadow-none backdrop-blur-xl ${
+              listening
+                ? "border-2 border-error/70"
+                : phase === "thinking"
+                  ? "border-2 border-primary/50"
+                  : "border border-base-300/30"
+            }`}
+          >
             <button
               type="button"
-              className="btn btn-ghost btn-xs mt-1 h-auto min-h-0 px-0 text-primary"
-              onClick={() => void copyText(transcript)}
+              className={`btn btn-circle btn-sm shrink-0 ${
+                listening ? "btn-error" : "text-white"
+              }`}
+              style={listening ? undefined : orbFill}
+              onClick={() => toggleRef.current()}
+              disabled={busy}
+              aria-label={
+                phase === "recording"
+                  ? "Stop dictation"
+                  : phase === "live"
+                    ? "Stop live mode"
+                    : "Start dictation"
+              }
             >
-              Copy transcript
+              {listening ? (
+                <span
+                  className="loading loading-dots loading-xs"
+                  aria-hidden="true"
+                />
+              ) : busy ? (
+                <LoaderCircle
+                  className="animate-spin"
+                  size={16}
+                  aria-hidden="true"
+                />
+              ) : (
+                <Mic size={17} strokeWidth={2.1} aria-hidden="true" />
+              )}
             </button>
-          )}
-        </div>
 
-        <div className="dropdown dropdown-end dropdown-top shrink-0">
-          <div
-            tabIndex={0}
-            role="button"
-            className="btn btn-ghost btn-xs gap-1 px-1.5"
-            aria-label="Choose dictation mode"
-          >
-            {mode === "notes" ? (
-              <NotebookPen size={13} strokeWidth={2.2} aria-hidden="true" />
-            ) : (
-              <Radio size={13} strokeWidth={2.2} aria-hidden="true" />
-            )}
-            {mode === "notes" ? "Notes" : "Live"}
-            <ChevronDown size={13} className="opacity-60" aria-hidden="true" />
-          </div>
-          <ul
-            tabIndex={0}
-            className="dropdown-content menu menu-sm z-50 w-44 rounded-box bg-base-200 p-1 shadow"
-          >
-            <li>
-              <button
-                type="button"
-                className={mode === "notes" ? "active" : ""}
-                disabled={locked}
-                onClick={() => chooseMode("notes")}
+            <div className="min-w-0 flex-1">
+              {listening ? (
+                <div className="flex h-5 items-center gap-2">
+                  <span
+                    className="inline-block h-2 w-2 animate-pulse rounded-full bg-error"
+                    aria-label="Listening"
+                  />
+                  <div
+                    className="flex h-5 items-end gap-0.5"
+                    aria-hidden="true"
+                  >
+                    {levels.map((level, index) => (
+                      <span
+                        key={index}
+                        className="w-1 rounded-full bg-error/80 transition-[height] duration-75"
+                        style={{
+                          height: `${Math.max(3, Math.round(level * 20))}px`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="text-sm font-semibold">
+                    {BAR_LABEL[phase]}
+                  </div>
+                  <div className="truncate text-xs opacity-60">{message}</div>
+                </>
+              )}
+              {(phase === "warming" || phase === "thinking") &&
+                progress > 0 &&
+                progress < 1 && (
+                  <progress
+                    className="progress progress-primary mt-1 h-1 w-full"
+                    value={progress}
+                    max={1}
+                  />
+                )}
+              {phase === "done" && transcript && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs mt-1 h-auto min-h-0 px-0 text-primary"
+                  onClick={() => void copyText(transcript)}
+                >
+                  Copy transcript
+                </button>
+              )}
+            </div>
+
+            <div className="dropdown dropdown-end dropdown-top shrink-0">
+              <div
+                tabIndex={0}
+                role="button"
+                className="btn btn-ghost btn-xs gap-1 px-1.5"
+                aria-label="Choose dictation mode"
               >
-                <NotebookPen size={15} aria-hidden="true" />
-                <span className="flex flex-col items-start">
-                  <span>Recording</span>
-                  <span className="text-[10px] opacity-60">for notetaking</span>
-                </span>
-              </button>
-            </li>
-            <li>
-              <button
-                type="button"
-                className={mode === "live" ? "active" : ""}
-                disabled={locked}
-                onClick={() => chooseMode("live")}
+                {mode === "notes" ? (
+                  <NotebookPen size={13} strokeWidth={2.2} aria-hidden="true" />
+                ) : (
+                  <Radio size={13} strokeWidth={2.2} aria-hidden="true" />
+                )}
+                {mode === "notes" ? "Notes" : "Live"}
+                <ChevronDown
+                  size={13}
+                  className="opacity-60"
+                  aria-hidden="true"
+                />
+              </div>
+              <ul
+                tabIndex={0}
+                className="dropdown-content menu menu-sm z-50 w-44 rounded-box bg-base-200 p-1 shadow"
               >
-                <Radio size={15} aria-hidden="true" />
-                <span className="flex flex-col items-start">
-                  <span>Live mode</span>
-                  <span className="text-[10px] opacity-60">
-                    types as you speak
-                  </span>
-                </span>
-              </button>
-            </li>
-          </ul>
-        </div>
+                <li>
+                  <button
+                    type="button"
+                    className={mode === "notes" ? "active" : ""}
+                    disabled={locked}
+                    onClick={() => chooseMode("notes")}
+                  >
+                    <NotebookPen size={15} aria-hidden="true" />
+                    <span className="flex flex-col items-start">
+                      <span>Recording</span>
+                      <span className="text-[10px] opacity-60">
+                        for notetaking
+                      </span>
+                    </span>
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    className={mode === "live" ? "active" : ""}
+                    disabled={locked}
+                    onClick={() => chooseMode("live")}
+                  >
+                    <Radio size={15} aria-hidden="true" />
+                    <span className="flex flex-col items-start">
+                      <span>Live mode</span>
+                      <span className="text-[10px] opacity-60">
+                        types as you speak
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </div>
 
-        <kbd className="kbd kbd-xs shrink-0">Alt + W</kbd>
+            <kbd className="kbd kbd-xs shrink-0">Alt + W</kbd>
+          </motion.div>
+        )}
 
-        <button
-          type="button"
-          className="btn btn-circle btn-ghost btn-xs shrink-0"
-          onClick={() => void dismissBar()}
-          disabled={busy}
-          aria-label="Close bar"
-        >
-          <X size={14} strokeWidth={2.4} aria-hidden="true" />
-        </button>
-      </div>
+        {barOpen && (
+          <motion.button
+            key="wispr-close"
+            type="button"
+            className="grid size-11 shrink-0 place-items-center rounded-full text-white disabled:opacity-40"
+            style={closeFill}
+            variants={closeVariant}
+            initial="closed"
+            animate="open"
+            exit="closed"
+            whileHover="hover"
+            whileTap="tapped"
+            onClick={() => void dismissBar()}
+            disabled={busy}
+            aria-label="Close bar"
+          >
+            <X size={18} strokeWidth={2.3} aria-hidden="true" />
+          </motion.button>
+        )}
+      </AnimatePresence>
     </main>
   )
 }

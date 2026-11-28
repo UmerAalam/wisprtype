@@ -25,6 +25,7 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "daisyui": "^5.8.3",
     "lucide-react": "^1.83.0",
+    "motion": "^14.14.0",
     "onnxruntime-web": "^1.31.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
