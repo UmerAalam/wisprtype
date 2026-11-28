@@ -33,5 +33,9 @@
   "dependencies": {
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-global-shortcut": "^2.4.1"
+  },
+  "allowScripts": {
+    "koffi@2.16.4": true,
+    "protobufjs@7.6.6": true
   }
 }
