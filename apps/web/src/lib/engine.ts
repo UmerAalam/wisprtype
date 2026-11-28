@@ -1,229 +1,133 @@
 import type { Recording } from "./audio"
+import type {
+  EngineJob,
+  EngineReply,
+  EngineRequest,
+  EngineResult,
+  Stage,
+  Word,
+} from "./engine-protocol"
 
-export type Word = {
-  text: string
-  start: number
-  end: number
-  speaker?: number
+export type { EngineResult, Stage, Word } from "./engine-protocol"
+
+type Handlers = {
+  onProgress?: (fraction: number) => void
+  onStage?: (stage: Stage) => void
 }
 
-export type EngineResult = {
-  text: string
-  words: Word[]
-  fillers: number
-  fillerCleanupSkipped: boolean
-  speakerCount: number
-  speakerDiarizationSkipped: boolean
+type Pending = Handlers & {
+  resolve: (value: never) => void
+  reject: (error: Error) => void
 }
 
-type VozInstance = {
-  transcribe: (
-    audio: { samples: Float32Array; sampleRate: number },
-  ) => Promise<{ text: string; words?: Word[] }>
-}
+const pending = new Map<number, Pending>()
+let nextId = 1
+let worker: Worker | null = null
 
-type UhmInstance = {
-  detect: (
-    samples: Float32Array,
-    sampleRate: number,
-    options: { bias: "precision"; words: Word[] },
-  ) => Promise<{ words?: Word[]; fillers?: unknown[] }>
-  dispose?: () => void
-}
+function route(reply: EngineReply) {
+  const call = pending.get(reply.id)
+  if (!call) return
 
-type WhoTurn = { speaker: number; start: number; end: number }
-
-type WhoInstance = {
-  diarize: (
-    input: { samples: Float32Array; sampleRate: number },
-  ) => Promise<{ speakerCount: number; turns: WhoTurn[] }>
-  dispose?: () => void
-}
-
-let vozPromise: Promise<VozInstance> | null = null
-let uhmPromise: Promise<UhmInstance> | null = null
-let whoPromise: Promise<WhoInstance> | null = null
-
-/** Models are large; load each once and reuse the instance for every dictation. */
-function getVoz(onProgress: (fraction: number) => void): Promise<VozInstance> {
-  if (!vozPromise) {
-    vozPromise = import("@desert-ant-labs/voz")
-      .then((module) => module.Voz.load({ onProgress }))
-      .catch((error) => {
-        vozPromise = null
-        throw error
-      })
+  switch (reply.kind) {
+    case "stage":
+      call.onStage?.(reply.stage)
+      return
+    case "progress":
+      call.onProgress?.(reply.fraction)
+      return
+    case "fail":
+      pending.delete(reply.id)
+      call.reject(new Error(reply.message))
+      return
+    case "ready":
+      pending.delete(reply.id)
+      call.resolve(undefined as never)
+      return
+    case "words":
+      pending.delete(reply.id)
+      call.resolve(reply.words as never)
+      return
+    case "result":
+      pending.delete(reply.id)
+      call.resolve(reply.result as never)
+      return
   }
-  return vozPromise
-}
-
-function getUhm(): Promise<UhmInstance> {
-  if (!uhmPromise) {
-    uhmPromise = import("@desert-ant-labs/uhm")
-      .then((module) => module.Uhm.load() as unknown as Promise<UhmInstance>)
-      .catch((error) => {
-        uhmPromise = null
-        throw error
-      })
-  }
-  return uhmPromise!
-}
-
-function getWho(onProgress: (fraction: number) => void): Promise<WhoInstance> {
-  if (!whoPromise) {
-    whoPromise = import("@desert-ant-labs/who")
-      .then(
-        (module) =>
-          module.Who.load({
-            accelerator: "auto",
-            onProgress,
-          }) as unknown as Promise<WhoInstance>,
-      )
-      .catch((error) => {
-        whoPromise = null
-        throw error
-      })
-  }
-  return whoPromise
 }
 
 /**
- * Warms all three models at launch so later dictations do not wait on loading.
- * Voz dominates the download, so its progress carries most of the bar.
+ * The engine runs in a worker because a decode holds its thread for the whole
+ * pass: on the main thread that froze the pill and swallowed the hotkey.
  */
-export async function preloadEngine(
-  onProgress?: (fraction: number) => void,
-): Promise<void> {
-  let vozProgress = 0
-  let whoProgress = 0
-  const report = () => onProgress?.(vozProgress * 0.85 + whoProgress * 0.15)
-
-  await Promise.all([
-    getVoz((fraction) => {
-      vozProgress = fraction
-      report()
-    }),
-    getUhm(),
-    getWho((fraction) => {
-      whoProgress = fraction
-      report()
-    }),
-  ])
+function engine(): Worker {
+  if (!worker) {
+    worker = new Worker(new URL("./engine.worker.ts", import.meta.url), {
+      type: "module",
+    })
+    worker.onmessage = (event: MessageEvent<EngineReply>) => route(event.data)
+    worker.onerror = (event) => {
+      failAll(event.message || "The transcription worker stopped")
+    }
+  }
+  return worker
 }
 
-/** Fast Voz-only pass for live mode, where latency matters more than cleanup. */
-export async function transcribeChunk(
+function failAll(message: string) {
+  const error = new Error(message)
+  for (const call of pending.values()) call.reject(error)
+  pending.clear()
+  worker?.terminate()
+  worker = null
+}
+
+function request<T>(body: EngineJob, handlers: Handlers): Promise<T> {
+  const id = nextId++
+  return new Promise<T>((resolve, reject) => {
+    pending.set(id, {
+      ...handlers,
+      resolve: resolve as (value: never) => void,
+      reject,
+    })
+    engine().postMessage({ ...body, id } as EngineRequest)
+  })
+}
+
+/**
+ * Gives up on the pass in flight. The worker is replaced rather than left to
+ * finish, and the models come back on their own so the next dictation does not
+ * pay for a cold reload while the user is already talking.
+ */
+export function cancelEngine(reason = "Transcription cancelled") {
+  if (pending.size === 0) return
+  failAll(reason)
+  void preloadEngine().catch(() => {})
+}
+
+export function preloadEngine(
+  onProgress?: (fraction: number) => void,
+  onStage?: (stage: Stage) => void,
+): Promise<void> {
+  return request<void>({ kind: "preload" }, { onProgress, onStage })
+}
+
+export function transcribeChunk(
   samples: Float32Array,
   sampleRate: number,
+  onStage?: (stage: Stage) => void,
 ): Promise<Word[]> {
-  const voz = await getVoz(() => {})
-  const result = await voz.transcribe({ samples, sampleRate })
-  return result.words ?? []
+  return request<Word[]>({ kind: "chunk", samples, sampleRate }, { onStage })
 }
 
-function labelSpeakers(words: Word[], turns: WhoTurn[]): Word[] {
-  return words.map((word) => {
-    const midpoint = (word.start + word.end) / 2
-    const turn = turns.find(
-      (candidate) => midpoint >= candidate.start && midpoint <= candidate.end,
-    )
-    return turn ? { ...word, speaker: turn.speaker } : word
-  })
-}
-
-function formatBySpeaker(words: Word[]): string {
-  const lines: string[] = []
-  let currentSpeaker: number | undefined
-  let currentWords: string[] = []
-
-  const flush = () => {
-    if (currentWords.length === 0) return
-    lines.push(
-      `Speaker ${(currentSpeaker ?? 0) + 1}: ${currentWords.join(" ")}`,
-    )
-  }
-
-  for (const word of words) {
-    const speaker = word.speaker ?? 0
-    if (speaker !== currentSpeaker) {
-      flush()
-      currentSpeaker = speaker
-      currentWords = []
-    }
-    currentWords.push(word.text)
-  }
-  flush()
-
-  return lines.join("\n")
-}
-
-export async function transcribe(
+export function transcribe(
   recording: Recording,
   onProgress?: (fraction: number) => void,
+  onStage?: (stage: Stage) => void,
 ): Promise<EngineResult> {
-  const voz = await getVoz(onProgress ?? (() => {}))
-  const result = await voz.transcribe({
-    samples: recording.samples,
-    sampleRate: recording.sampleRate,
-  })
-  const words: Word[] = result.words ?? []
-
-  let cleanedWords = words
-  let fillers = 0
-  let fillerCleanupSkipped = false
-
-  try {
-    const uhm = await getUhm()
-    const detected = await uhm.detect(recording.samples, recording.sampleRate, {
-      bias: "precision",
-      words,
-    })
-    if (Array.isArray(detected.words) && detected.words.length > 0) {
-      cleanedWords = detected.words
-    }
-    fillers = detected.fillers?.length ?? 0
-  } catch (error) {
-    // A failed filler pass must never lose the transcript.
-    fillerCleanupSkipped = true
-    console.warn("Uhm filler cleanup was skipped:", error)
-  }
-
-  let speakerCount = 1
-  let speakerDiarizationSkipped = false
-  let labeledWords = cleanedWords
-
-  try {
-    const who = await getWho(() => {})
-    const diarization = await who.diarize({
+  return request<EngineResult>(
+    {
+      kind: "full",
       samples: recording.samples,
       sampleRate: recording.sampleRate,
-    })
-    speakerCount = diarization.speakerCount || 1
-    if (speakerCount > 1) {
-      labeledWords = labelSpeakers(cleanedWords, diarization.turns)
-    }
-  } catch (error) {
-    speakerDiarizationSkipped = true
-    console.warn("Who speaker labeling was skipped:", error)
-  }
-
-  const plainText = (
-    labeledWords.length > 0
-      ? labeledWords.map((word) => word.text).join(" ")
-      : result.text
-  ).trim()
-
-  const text =
-    speakerCount > 1 && !speakerDiarizationSkipped && labeledWords.length > 0
-      ? formatBySpeaker(labeledWords)
-      : plainText
-
-  return {
-    text,
-    words: labeledWords,
-    fillers,
-    fillerCleanupSkipped,
-    speakerCount,
-    speakerDiarizationSkipped,
-  }
+    },
+    { onProgress, onStage },
+  )
 }

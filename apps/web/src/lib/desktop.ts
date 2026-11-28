@@ -12,6 +12,19 @@ export async function onToggle(handler: () => void): Promise<() => void> {
   return listen("wispr-toggle", handler)
 }
 
+/**
+ * Right Ctrl press and release, from the low-level keyboard hook. The plugin
+ * based hotkey cannot carry this: RegisterHotKey never reports a release.
+ */
+export async function onHoldKey(
+  handler: (down: boolean) => void,
+): Promise<() => void> {
+  if (!isDesktop()) return () => {}
+  return listen<{ down: boolean }>("wispr-key", (event) =>
+    handler(event.payload.down),
+  )
+}
+
 export async function showBar(focus = true): Promise<void> {
   if (isDesktop()) await invoke("show_bar", { focus })
 }

@@ -5,6 +5,17 @@ export type Recording = {
 }
 
 /**
+ * Cheap gate for near-silent captures. Voz runs to its token limit on audio
+ * with no speech in it, which costs tens of seconds and returns nothing.
+ */
+export function hasSpeech(samples: Float32Array, threshold = 0.02): boolean {
+  for (let i = 0; i < samples.length; i += 32) {
+    if (Math.abs(samples[i]) > threshold) return true
+  }
+  return false
+}
+
+/**
  * Captures raw mono PCM from the microphone. Raw samples keep the pipeline
  * simple: both Voz and Uhm accept Float32Array directly, with no container
  * decoding or temp files.

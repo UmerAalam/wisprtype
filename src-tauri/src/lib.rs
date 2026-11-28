@@ -1,6 +1,9 @@
 use enigo::Keyboard;
 use tauri::Emitter;
 
+#[cfg(windows)]
+mod hotkey;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -28,6 +31,11 @@ pub fn run() {
                         let _ = app.emit("wispr-toggle", ());
                     }
                 })?;
+
+            // Alt+W can only toggle. Hold-to-talk needs the release too, which
+            // the global-shortcut plugin never reports on Windows.
+            #[cfg(windows)]
+            hotkey::spawn(app.handle().clone());
 
             Ok(())
         })
